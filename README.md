@@ -1,4 +1,4 @@
-# WhisperX upload app
+# WhisperX interview transcribe
 
 Upload audio/video, transcribe in Russian, and copy the transcript grouped by speaker. Optional minimum/maximum speaker counts.
 
