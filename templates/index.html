@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhisperX transcription</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; color: #202938; background: #f6f7f9; }
+  main { display: grid; grid-template-columns: 1fr 1fr; min-height: 100vh; }
+  section { padding: 40px; min-width: 0; }
+  section + section { background: white; border-left: 1px solid #dde1e7; }
+  h1, h2 { margin-top: 0; }
+  label { display: block; margin: 24px 0 8px; }
+  input { width: 100%; padding: 10px; border: 1px solid #cbd1d9; border-radius: 6px; background: white; }
+  .counts { display: flex; gap: 16px; } .counts > div { flex: 1; }
+  button { margin-top: 24px; padding: 12px 20px; border: 0; border-radius: 6px; background: #2855da; color: white; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  small, #status, .meta { color: #626d7d; }
+  #status { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .segment { border-bottom: 1px solid #eee; padding: 16px 0; }
+  .segment p { margin: 6px 0; white-space: pre-wrap; }
+  [hidden] { display: none !important; }
+  @media (max-width: 700px) { main { grid-template-columns: 1fr; } section { padding: 24px; } }
+</style>
+<main>
+  <section>
+    <h1>WhisperX</h1>
+    <p>Upload audio or video to get a Russian transcript with speaker labels.</p>
+    <form id="form">
+      <label for="file">Audio or video</label>
+      <input id="file" name="file" type="file" accept="audio/*,video/*" required>
+      <div class="counts">
+        <div><label for="min">Minimum speakers</label><input id="min" name="min_speakers" type="number" min="1" step="1" placeholder="Auto"></div>
+        <div><label for="max">Maximum speakers</label><input id="max" name="max_speakers" type="number" min="1" step="1" placeholder="Auto"></div>
+      </div>
+      <p><small>Leave speaker counts blank for automatic detection.</small></p>
+      <button id="submit">Transcribe</button>
+    </form>
+    <p id="status" role="status" aria-live="polite">Ready.</p>
+  </section>
+  <section>
+    <h2>Transcript</h2>
+    <button id="copy" type="button" hidden>Copy transcript</button>
+    <div id="transcript">Your transcript will appear here.</div>
+  </section>
+</main>
+<script>
+  const form = document.querySelector('#form');
+  const status = document.querySelector('#status');
+  const transcript = document.querySelector('#transcript');
+  const button = document.querySelector('#submit');
+  const copy = document.querySelector('#copy');
+  let clipboardText = '';
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(clipboardText);
+      status.textContent = 'Transcript copied.';
+    } catch {
+      status.textContent = 'Clipboard access failed. Select the transcript and copy it manually.';
+    }
+  };
+  const time = seconds => {
+    const n = Math.floor(seconds || 0);
+    return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
+  };
+  form.onsubmit = async event => {
+    event.preventDefault();
+    button.disabled = true;
+    copy.hidden = true;
+    clipboardText = '';
+    transcript.textContent = 'Waiting for transcription…';
+    status.textContent = 'Uploading and transcribing… The first run may download models. Keep this page open.';
+    try {
+      const response = await fetch('/transcribe', { method: 'POST', body: new FormData(form) });
+      const data = await response.json();
+      if (!response.ok) throw new Error([data.error, data.detail].filter(Boolean).join('\n\n'));
+      transcript.replaceChildren();
+      const blocks = data.blocks || [];
+      const copiedBlocks = [];
+      for (const segment of blocks) {
+        const row = document.createElement('div');
+        row.className = 'segment';
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = `${time(segment.start)} – ${time(segment.end)} · ${segment.speaker || 'Unknown speaker'}`;
+        const text = document.createElement('p');
+        text.textContent = segment.text;
+        copiedBlocks.push(`${meta.textContent}\n${segment.text}`);
+        row.append(meta, text);
+        transcript.append(row);
+      }
+      clipboardText = copiedBlocks.join('\n\n');
+      copy.hidden = !clipboardText;
+      if (!blocks.length) transcript.textContent = 'No speech detected.';
+      status.textContent = 'Done.';
+    } catch (error) {
+      status.textContent = error.message;
+      transcript.textContent = 'Transcription failed. See the error on the left.';
+    } finally { button.disabled = false; }
+  };
+</script>
+</html>
