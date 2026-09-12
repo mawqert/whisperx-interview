@@ -76,14 +76,14 @@ def transcribe():
                 import imageio_ffmpeg
                 (work / 'ffmpeg').symlink_to(imageio_ffmpeg.get_ffmpeg_exe())
                 env['PATH'] = str(work) + os.pathsep + env.get('PATH', '')
-            # Read the token in the child so it is not exposed in process arguments.
+            # The worker calls the Python API; JSON carries job options, while
+            # the token stays in the environment and out of process arguments.
+            job = work / 'job.json'
+            output = work / 'result.json'
+            job.write_text(json.dumps({'audio_path': str(source),
+                                       'output_path': str(output), **speakers}), encoding='utf-8')
             command = [sys.executable, str(Path(__file__).with_name('transcribe_worker.py')),
-                       str(source), '--device', 'cuda',
-                       '--task', 'transcribe', '--language', 'ru',
-                       '--compute_type', 'int8', '--batch_size', '8', '--diarize',
-                       '--output_format', 'json', '--output_dir', str(work)]
-            for name, value in speakers.items():
-                command.extend(['--' + name, str(value)])
+                       str(job)]
             with (work / 'run.log').open('w+') as log:
                 result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
                                         env=env, timeout=6 * 60 * 60)
@@ -108,7 +108,7 @@ def transcribe():
                         message = ('Cannot reach Hugging Face and required model files are not cached. '
                                    'Restore access to huggingface.co and retry to download them.')
                     return jsonify(error=message, detail=detail), 500
-            result = json.loads(source.with_suffix('.json').read_text())
+            result = json.loads(output.read_text(encoding='utf-8'))
             result['blocks'] = speaker_blocks(result.get('segments', []))
             return jsonify(result)
     except subprocess.TimeoutExpired:
