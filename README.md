@@ -14,6 +14,7 @@ cp .env.example .env
 
 Open http://127.0.0.1:8000. For subsequent runs, use `./start.sh`.
 
-Uses `large-v3-turbo`, CUDA float16, batch size 8. Restart after editing `.env`; existing environment variables take precedence.
+Uses [coriollon/whisper-large-v3-turbo-russian-codeswitch](https://huggingface.co/coriollon/whisper-large-v3-turbo-russian-codeswitch) for Russian speech containing English IT terms.
+Restart after editing `.env`; existing environment variables take precedence.
 
 Hugging Face connection failures retry using cached models. After the first successful run, set `HF_HUB_OFFLINE=1` in `.env` to skip online checks entirely.

@@ -77,12 +77,10 @@ def transcribe():
                 (work / 'ffmpeg').symlink_to(imageio_ffmpeg.get_ffmpeg_exe())
                 env['PATH'] = str(work) + os.pathsep + env.get('PATH', '')
             # Read the token in the child so it is not exposed in process arguments.
-            command = [sys.executable, '-c',
-                       'import os, sys; from whisperx.__main__ import cli; '
-                       'sys.argv.extend(["--hf_token", os.environ["HF_TOKEN"]]); cli()',
-                       str(source), '--model', 'large-v3-turbo', '--device', 'cuda',
+            command = [sys.executable, str(Path(__file__).with_name('transcribe_worker.py')),
+                       str(source), '--device', 'cuda',
                        '--task', 'transcribe', '--language', 'ru',
-                       '--compute_type', 'float16', '--batch_size', '8', '--diarize',
+                       '--compute_type', 'int8', '--batch_size', '8', '--diarize',
                        '--output_format', 'json', '--output_dir', str(work)]
             for name, value in speakers.items():
                 command.extend(['--' + name, str(value)])
