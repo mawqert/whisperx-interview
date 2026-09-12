@@ -1,4 +1,5 @@
 import io
+from contextlib import redirect_stdout
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,76 @@ from unittest.mock import Mock, patch
 
 import app
 import transcribe_worker as worker
+import run_logging
+
+
+class LoggingTests(unittest.TestCase):
+    def test_worker_streams_both_outputs_and_redacts_token(self):
+        output, retained = io.StringIO(), io.StringIO()
+        command = [sys.executable, '-c',
+                   'import os, sys; print(os.environ["HF_TOKEN"]); print("error detail", file=sys.stderr)']
+        with redirect_stdout(output):
+            result = app.run_worker(command, stdout=retained, stderr=subprocess.STDOUT,
+                                    env={**os.environ, 'HF_TOKEN': 'test-secret'}, timeout=5)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(output.getvalue(), retained.getvalue())
+        self.assertIn('[redacted]', output.getvalue())
+        self.assertIn('error detail', output.getvalue())
+        self.assertNotIn('test-secret', output.getvalue())
+
+    def test_worker_timeout_stops_process(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
+            app.run_worker([sys.executable, '-c', 'import time; time.sleep(10)'],
+                           stdout=io.StringIO(), stderr=subprocess.STDOUT,
+                           env=os.environ.copy(), timeout=0.1)
+
+    def test_gpu_metrics_are_optional(self):
+        with patch.object(run_logging.subprocess, 'run', side_effect=FileNotFoundError), \
+                redirect_stdout(io.StringIO()) as output:
+            run_logging.log_load()
+        self.assertIn('statistics unavailable', output.getvalue())
+
+
+class SpeakerBlockTests(unittest.TestCase):
+    def test_correction_inside_one_segment_preserves_three_turns(self):
+        segments = [{'start': 0, 'end': 3, 'speaker': 'candidate',
+                     'text': 'filter Нет. sorted', 'words': [
+                         {'word': 'filter', 'start': 0, 'end': 1, 'speaker': 'candidate'},
+                         {'word': 'Нет.', 'start': 1, 'end': 2, 'speaker': 'interviewer'},
+                         {'word': 'sorted', 'start': 2, 'end': 3, 'speaker': 'candidate'}]}]
+        blocks = app.speaker_blocks(segments)
+        self.assertEqual([b['speaker'] for b in blocks], ['candidate', 'interviewer', 'candidate'])
+        self.assertEqual([b['text'] for b in blocks], ['filter', 'Нет.', 'sorted'])
+        self.assertEqual([(b['start'], b['end']) for b in blocks], [(0, 1), (1, 2), (2, 3)])
+
+    def test_same_speaker_segments_stay_separate(self):
+        segments = [{'start': i, 'end': i + 1, 'speaker': 'A', 'text': 'Ответ.'}
+                    for i in range(3)]
+        self.assertEqual(len(app.speaker_blocks(segments)), 3)
+
+    def test_incomplete_alignment_preserves_all_text(self):
+        segment = {'start': 0, 'end': 2, 'speaker': 'A', 'text': 'Запускаем Kubernetes.',
+                   'words': [{'word': 'Запускаем', 'start': 0, 'end': 1, 'speaker': 'A'}]}
+        self.assertEqual(app.speaker_blocks([segment])[0]['text'], segment['text'])
+
+    def test_unaligned_word_is_kept_without_guessing_speaker(self):
+        segment = {'start': 0, 'end': 2, 'speaker': 'A', 'text': 'Это API', 'words': [
+            {'word': 'Это', 'start': 0, 'end': 1, 'speaker': 'A'}, {'word': 'API'}]}
+        blocks = app.speaker_blocks([segment])
+        self.assertEqual([b['text'] for b in blocks], ['Это', 'API'])
+        self.assertIsNone(blocks[1]['speaker'])
+
+    def test_long_speech_and_pauses_split_blocks(self):
+        words = [{'word': 'слово', 'start': i, 'end': i + 1, 'speaker': 'A'}
+                 for i in range(65)]
+        segment = {'start': 0, 'end': 65, 'text': ' '.join(w['word'] for w in words), 'words': words}
+        blocks = app.speaker_blocks([segment])
+        self.assertEqual(len(blocks), 3)
+        self.assertTrue(all(b['end'] - b['start'] <= 30 for b in blocks))
+        words[1]['start'] = 4
+        words[1]['end'] = 5
+        segment.update(words=words[:2], text='слово слово', end=5)
+        self.assertEqual(len(app.speaker_blocks([segment])), 2)
 
 
 class PipelineTests(unittest.TestCase):
@@ -39,7 +110,8 @@ class PipelineTests(unittest.TestCase):
         self.addCleanup(download.stop)
 
     def test_pipeline_reuses_audio_and_preserves_settings(self):
-        result = worker.transcribe_audio('audio.wav', token='secret', min_speakers=2, max_speakers=3)
+        result = worker.transcribe_audio('audio.wav', token='secret', min_speakers=2, max_speakers=3,
+                                         model_name='codeswitch')
         self.download.assert_called_once_with(repo_id=worker.MODEL_REPO,
                                               allow_patterns='ct2_int8_float16/*')
         self.wx.load_model.assert_called_once_with(
@@ -57,10 +129,30 @@ class PipelineTests(unittest.TestCase):
 
     def test_silence_skips_alignment_and_diarization(self):
         self.model.transcribe.return_value = {'segments': []}
-        self.assertEqual(worker.transcribe_audio('silence.wav', token='secret'),
-                         {'segments': [], 'word_segments': [], 'language': 'ru'})
+        result = worker.transcribe_audio('silence.wav', token='secret')
+        self.assertEqual(result['segments'], [])
+        self.assertEqual(result['word_segments'], [])
+        self.assertEqual(result['language'], 'ru')
         self.wx.load_align_model.assert_not_called()
         self.diarize.DiarizationPipeline.assert_not_called()
+
+    def test_full_model_uses_converted_alias_and_small_batch(self):
+        result = worker.transcribe_audio('audio.wav', token='secret', model_name='large-v3')
+        self.download.assert_not_called()
+        self.wx.load_model.assert_called_once_with(
+            'large-v3', device='cuda', compute_type='int8_float16', language='ru',
+            task='transcribe', use_auth_token='secret')
+        self.model.transcribe.assert_called_once_with(self.audio, batch_size=2)
+        self.assertEqual(result['run_info']['model'], 'large-v3')
+        self.assertEqual(result['asr_segments'], self.raw['segments'])
+        self.assertIsNot(result['asr_segments'], self.raw['segments'])
+
+    def test_default_is_standard_turbo(self):
+        worker.transcribe_audio('audio.wav', token='secret')
+        self.download.assert_not_called()
+        self.assertEqual(self.wx.load_model.call_args.args, ('large-v3-turbo',))
+        self.assertEqual(self.wx.load_model.call_args.kwargs['compute_type'], 'int8')
+        self.model.transcribe.assert_called_once_with(self.audio, batch_size=8)
 
     def test_stage_failure_releases_memory_and_stops_pipeline(self):
         self.wx.align.side_effect = RuntimeError('alignment failed')
@@ -71,6 +163,11 @@ class PipelineTests(unittest.TestCase):
 
 
 class EndpointTests(unittest.TestCase):
+    def test_unknown_model_rejected(self):
+        response = app.app.test_client().post('/transcribe', data={
+            'file': (io.BytesIO(b'audio'), 'audio.mp3'), 'model': 'unknown'})
+        self.assertEqual(response.status_code, 400)
+
     def post(self):
         return app.app.test_client().post('/transcribe', data={
             'file': (io.BytesIO(b'audio'), 'audio.mp3'), 'min_speakers': '2'})
@@ -85,6 +182,7 @@ class EndpointTests(unittest.TestCase):
             self.assertNotIn('secret', command)
             job = json.loads(Path(command[2]).read_text())
             self.assertEqual(job['min_speakers'], 2)
+            self.assertEqual(job['model_name'], 'large-v3-turbo')
             self.assertNotIn('token', job)
             if len(calls) == 1:
                 kwargs['stdout'].write('huggingface.co ConnectionError')
@@ -93,7 +191,7 @@ class EndpointTests(unittest.TestCase):
                 {'text': ' Docker ', 'start': 0, 'end': 1, 'speaker': 'SPEAKER_00'}]}))
             return types.SimpleNamespace(returncode=0)
 
-        with patch.object(app.subprocess, 'run', side_effect=run):
+        with patch.object(app, 'run_worker', side_effect=run):
             response = self.post()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json['blocks'][0]['text'], 'Docker')
@@ -102,7 +200,7 @@ class EndpointTests(unittest.TestCase):
 
     @patch.dict(os.environ, {'HF_TOKEN': 'secret'})
     def test_timeout_releases_lock(self):
-        with patch.object(app.subprocess, 'run', side_effect=subprocess.TimeoutExpired('worker', 1)):
+        with patch.object(app, 'run_worker', side_effect=subprocess.TimeoutExpired('worker', 1)):
             response = self.post()
         self.assertEqual(response.status_code, 504)
         self.assertFalse(app.transcribing.locked())
