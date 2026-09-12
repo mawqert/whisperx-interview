@@ -77,10 +77,11 @@ class SpeakerBlockTests(unittest.TestCase):
         self.assertEqual([b['text'] for b in blocks], ['filter', 'Нет.', 'sorted'])
         self.assertEqual([(b['start'], b['end']) for b in blocks], [(0, 1), (1, 2), (2, 3)])
 
-    def test_same_speaker_segments_stay_separate(self):
+    def test_same_speaker_segments_merge(self):
         segments = [{'start': i, 'end': i + 1, 'speaker': 'A', 'text': 'Ответ.'}
                     for i in range(3)]
-        self.assertEqual(len(app.speaker_blocks(segments)), 3)
+        self.assertEqual(app.speaker_blocks(segments), [
+            {'speaker': 'A', 'start': 0, 'end': 3, 'text': 'Ответ. Ответ. Ответ.'}])
 
     def test_incomplete_alignment_preserves_all_text(self):
         segment = {'start': 0, 'end': 2, 'speaker': 'A', 'text': 'Запускаем Kubernetes.',
@@ -94,17 +95,22 @@ class SpeakerBlockTests(unittest.TestCase):
         self.assertEqual([b['text'] for b in blocks], ['Это', 'API'])
         self.assertIsNone(blocks[1]['speaker'])
 
-    def test_long_speech_and_pauses_split_blocks(self):
+    def test_long_speech_and_pauses_merge_for_same_speaker(self):
         words = [{'word': 'слово', 'start': i, 'end': i + 1, 'speaker': 'A'}
                  for i in range(65)]
         segment = {'start': 0, 'end': 65, 'text': ' '.join(w['word'] for w in words), 'words': words}
         blocks = app.speaker_blocks([segment])
-        self.assertEqual(len(blocks), 3)
-        self.assertTrue(all(b['end'] - b['start'] <= 30 for b in blocks))
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]['end'], 65)
+        self.assertEqual(blocks[0]['text'], segment['text'])
         words[1]['start'] = 4
         words[1]['end'] = 5
         segment.update(words=words[:2], text='слово слово', end=5)
-        self.assertEqual(len(app.speaker_blocks([segment])), 2)
+        self.assertEqual(len(app.speaker_blocks([segment])), 1)
+
+    def test_unknown_speakers_do_not_merge(self):
+        segments = [{'start': i, 'end': i + 1, 'text': 'Ответ.'} for i in range(2)]
+        self.assertEqual(len(app.speaker_blocks(segments)), 2)
 
 
 class PipelineTests(unittest.TestCase):

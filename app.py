@@ -46,7 +46,7 @@ def run_worker(command, *, stdout, stderr, env, timeout):
 
 
 def speaker_blocks(segments):
-    """Preserve sentence boundaries and speaker changes within ASR segments."""
+    """Group consecutive speech by speaker, honoring word-level changes."""
     blocks = []
     for segment in segments:
         text = segment.get('text', '').strip()
@@ -77,7 +77,16 @@ def speaker_blocks(segments):
                 block['text'] += ' ' + word['word'].strip()
                 block['end'] = max(block['end'], end)
             previous_end = end
-    return blocks
+    merged = []
+    for block in blocks:
+        # Unknown labels are not evidence that two blocks share a speaker.
+        if merged and block['speaker'] and block['speaker'] == merged[-1]['speaker']:
+            merged[-1]['text'] += ' ' + block['text']
+            merged[-1]['start'] = min(merged[-1]['start'], block['start'])
+            merged[-1]['end'] = max(merged[-1]['end'], block['end'])
+        else:
+            merged.append(block.copy())
+    return merged
 
 
 @app.get('/')

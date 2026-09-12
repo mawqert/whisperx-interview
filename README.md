@@ -1,24 +1,36 @@
-# WhisperX interview transcribe
+# WhisperX interview transcription
 
-Upload audio/video, transcribe in Russian, and copy the transcript grouped by speaker. Optional minimum/maximum speaker counts.
+Transcribe Russian audio or video with `large-v3`, timestamps, and speaker labels. Copy the transcript or download a text file named after your upload. Consecutive blocks from the same speaker are merged.
 
-Requires an NVIDIA GPU with CUDA and access to [pyannote speaker diarization](https://huggingface.co/pyannote/speaker-diarization-community-1). Models download on first use.
+## Setup
+
+Requires Python, an NVIDIA GPU with working CUDA support, and a Hugging Face account with access to [speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1). Accept the model’s access conditions before starting.
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
-# Set HF_TOKEN in .env, then start:
+```
+
+Set `HF_TOKEN` in `.env` to your Hugging Face read token, then run:
+
+```bash
 ./start.sh
 ```
 
-Open http://127.0.0.1:8000. For subsequent runs, use `./start.sh`.
+Open http://127.0.0.1:8000. Models download on first use.
 
-Uses [coriollon/whisper-large-v3-turbo-russian-codeswitch](https://huggingface.co/coriollon/whisper-large-v3-turbo-russian-codeswitch) for Russian speech containing English IT terms.
-The Python worker downloads only the `ct2_int8_float16` build and runs on CUDA with INT8, batch size **8**, and explicit Russian language.
+## Use
 
-Transcription, word alignment, and speaker diarization use the [WhisperX Python API](https://github.com/m-bain/whisperX#python-usage-). Models are released between stages to limit GPU memory use. Each job runs in a separate process to enforce the six-hour timeout and release GPU resources on exit. Audio is decoded once and reused across stages. English terms may have less reliable word timestamps with the Russian aligner.
+1. Choose an audio or video file (maximum 2 GB).
+2. Leave speaker counts blank for automatic detection. If you know the exact count, set both minimum and maximum to that number.
+3. Click **Transcribe** and keep the page open until it finishes.
+4. Copy or download the transcript.
 
-Restart after editing `.env`; existing environment variables take precedence.
+One transcription runs at a time. The terminal shows progress, GPU usage, and errors. Review technical terms and speaker labels before relying on the transcript.
 
-Hugging Face connection failures retry using cached models. After the first successful run, set `HF_HUB_OFFLINE=1` in `.env` to skip online checks entirely.
+## Connection problems
+
+After a successful transcription, add `HF_HUB_OFFLINE=1` to `.env` to use cached models without contacting Hugging Face. Remove it if required models need downloading.
+
+Restart the app after changing `.env`.
