@@ -41,6 +41,7 @@
   <section>
     <h2>Transcript</h2>
     <button id="copy" type="button" hidden>Copy transcript</button>
+    <button id="download" type="button" hidden>Download transcript</button>
     <div id="transcript">Your transcript will appear here.</div>
   </section>
 </main>
@@ -50,7 +51,19 @@
   const transcript = document.querySelector('#transcript');
   const button = document.querySelector('#submit');
   const copy = document.querySelector('#copy');
+  const download = document.querySelector('#download');
   let clipboardText = '';
+  let transcriptFilename = '';
+  download.onclick = () => {
+    const url = URL.createObjectURL(new Blob([clipboardText], { type: 'text/plain;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = transcriptFilename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   copy.onclick = async () => {
     try {
       await navigator.clipboard.writeText(clipboardText);
@@ -67,11 +80,15 @@
     event.preventDefault();
     button.disabled = true;
     copy.hidden = true;
+    download.hidden = true;
     clipboardText = '';
+    const formData = new FormData(form);
+    const filename = formData.get('file').name;
+    transcriptFilename = `${filename.replace(/\.[^.]+$/, '') || filename}-transcript.txt`;
     transcript.textContent = 'Waiting for transcription…';
     status.textContent = 'Uploading and transcribing… The first run may download models. Keep this page open.';
     try {
-      const response = await fetch('/transcribe', { method: 'POST', body: new FormData(form) });
+      const response = await fetch('/transcribe', { method: 'POST', body: formData });
       const data = await response.json();
       if (!response.ok) throw new Error([data.error, data.detail].filter(Boolean).join('\n\n'));
       transcript.replaceChildren();
@@ -91,6 +108,7 @@
       }
       clipboardText = copiedBlocks.join('\n\n');
       copy.hidden = !clipboardText;
+      download.hidden = !clipboardText;
       if (!blocks.length) transcript.textContent = 'No speech detected.';
       status.textContent = 'Done.';
     } catch (error) {
