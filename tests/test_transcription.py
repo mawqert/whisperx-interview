@@ -7,7 +7,7 @@ import subprocess
 import sys
 import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import app
 import transcribe_worker as worker
@@ -15,6 +15,30 @@ import run_logging
 
 
 class LoggingTests(unittest.TestCase):
+    def test_diarization_progress_is_throttled_and_completes(self):
+        with redirect_stdout(io.StringIO()) as output:
+            report = worker.diarization_progress()
+            for percent in (0, 1, 2, 5, 50, 51, 99, 100):
+                report(percent)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 5)
+        self.assertIn('step=segmentation', lines[0])
+        self.assertIn('step=embeddings/clustering', lines[2])
+        self.assertIn('step=complete', lines[-1])
+
+    def test_diarizer_setup_does_not_probe_embedding_model(self):
+        from runtime_setup import prepare_diarizer
+
+        class Pipeline:
+            segmentation_batch_size = 32
+            embedding_batch_size = 32
+
+            @property
+            def _embedding(self):
+                raise AssertionError('Setup must not initialize embedding probes')
+
+        prepare_diarizer(types.SimpleNamespace(model=Pipeline()))
+
     def test_worker_streams_both_outputs_and_redacts_token(self):
         output, retained = io.StringIO(), io.StringIO()
         command = [sys.executable, '-c',
@@ -115,11 +139,12 @@ class PipelineTests(unittest.TestCase):
             'large-v3', device='cuda', compute_type='int8_float16',
             language='ru', task='transcribe', use_auth_token='secret')
         self.wx.load_audio.assert_called_once_with('audio.wav')
-        self.model.transcribe.assert_called_once_with(self.audio, batch_size=2)
+        self.model.transcribe.assert_called_once_with(self.audio, batch_size=4)
         self.wx.align.assert_called_once_with(self.raw['segments'], 'aligner',
                                              {'language': 'ru'}, self.audio, 'cuda',
                                              return_char_alignments=False)
-        self.diarizer.assert_called_once_with(self.audio, min_speakers=2, max_speakers=3)
+        self.diarizer.assert_called_once_with(self.audio, min_speakers=2, max_speakers=3,
+                                              progress_callback=ANY)
         self.wx.assign_word_speakers.assert_called_once_with('speaker-segments', self.aligned)
         self.assertEqual(result['language'], 'ru')
         self.assertEqual(self.torch.cuda.empty_cache.call_count, 3)
@@ -138,15 +163,17 @@ class PipelineTests(unittest.TestCase):
         self.wx.load_model.assert_called_once_with(
             'large-v3', device='cuda', compute_type='int8_float16', language='ru',
             task='transcribe', use_auth_token='secret')
-        self.model.transcribe.assert_called_once_with(self.audio, batch_size=2)
+        self.model.transcribe.assert_called_once_with(self.audio, batch_size=4)
         self.assertEqual(result['run_info']['model'], 'large-v3')
         self.assertEqual(result['asr_segments'], self.raw['segments'])
         self.assertIsNot(result['asr_segments'], self.raw['segments'])
 
-    def test_diarization_batches_are_limited(self):
+    def test_diarization_preserves_model_defaults(self):
+        self.diarizer.model.segmentation_batch_size = 32
+        self.diarizer.model.embedding_batch_size = 32
         worker.transcribe_audio('audio.wav', token='secret')
-        self.assertEqual(self.diarizer.model.segmentation_batch_size, 8)
-        self.assertEqual(self.diarizer.model.embedding_batch_size, 8)
+        self.assertEqual(self.diarizer.model.segmentation_batch_size, 32)
+        self.assertEqual(self.diarizer.model.embedding_batch_size, 32)
 
     def test_stage_failure_releases_memory_and_stops_pipeline(self):
         self.wx.align.side_effect = RuntimeError('alignment failed')

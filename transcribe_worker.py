@@ -9,12 +9,32 @@ import sys
 import threading
 import time
 
-from model_config import MODEL_NAME, COMPUTE_TYPE, BATCH_SIZE, DIARIZATION_BATCH_SIZE
+from model_config import MODEL_NAME, COMPUTE_TYPE, BATCH_SIZE
 from runtime_setup import load_runtime, prepare_diarizer
 from run_logging import log, log_load, stage
 
 DEVICE = 'cuda'
 LANGUAGE = 'ru'
+
+
+def diarization_progress():
+    """WhisperX maps segmentation to 0–50% and embeddings to 50–99%."""
+    last_bucket = -1
+    started = time.monotonic()
+
+    def report(percent):
+        nonlocal last_bucket
+        bucket = int(percent // 5)
+        if bucket <= last_bucket:
+            return
+        last_bucket = bucket
+        step = 'segmentation' if percent < 50 else 'embeddings/clustering'
+        if percent >= 100:
+            step = 'complete'
+        log(f'PROGRESS diarization={percent:.0f}% step={step} '
+            f'elapsed={time.monotonic() - started:.1f}s')
+
+    return report
 
 
 def transcribe_audio(audio_path, *, token, min_speakers=None, max_speakers=None):
@@ -72,10 +92,13 @@ def transcribe_audio(audio_path, *, token, min_speakers=None, max_speakers=None)
     try:
         with stage('load diarization model'):
             diarizer = DiarizationPipeline(token=token, device=DEVICE)
-            prepare_diarizer(diarizer, DIARIZATION_BATCH_SIZE)
+            prepare_diarizer(diarizer)
         with stage('diarize'):
+            progress = diarization_progress()
+            progress(0)
             diarization = diarizer(
                 audio, min_speakers=min_speakers, max_speakers=max_speakers,
+                progress_callback=progress,
             )
         result = whisperx.assign_word_speakers(diarization, result)
     finally:

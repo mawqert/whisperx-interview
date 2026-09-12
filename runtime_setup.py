@@ -8,8 +8,6 @@ from run_logging import log
 def load_runtime():
     import torch
 
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
     # This pipeline decodes with ffmpeg and passes waveforms to pyannote.
     # Replace only its unused-decoder import warning with a concise explanation.
     with warnings.catch_warnings(record=True) as caught:
@@ -24,19 +22,9 @@ def load_runtime():
     return torch, whisperx, DiarizationPipeline
 
 
-def prepare_diarizer(diarizer, batch_size):
+def prepare_diarizer(diarizer):
     pipeline = diarizer.model
-    pipeline.segmentation_batch_size = batch_size
-    pipeline.embedding_batch_size = batch_size
-    # pyannote probes progressively shorter random inputs to determine the
-    # embedding model's minimum length. A one-frame probe has undefined sample
-    # std; this is not an embedding computed from the uploaded recording.
-    # Prime the cached property here, limiting suppression to this probe only.
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            'ignore', message=r'std\(\): degrees of freedom is <= 0\.',
-            category=UserWarning, module=r'pyannote\.audio\.models\.blocks\.pooling',
-        )
-        minimum = pipeline._embedding.min_num_samples
-    log(f'CONFIG diarization segmentation_batch={batch_size} embedding_batch={batch_size} '
-        f'minimum_embedding_samples={minimum}')
+    # Use the model's own batch settings and lazy initialization, matching the
+    # successful run. Do not run synthetic embedding probes ahead of inference.
+    log(f'CONFIG diarization segmentation_batch={pipeline.segmentation_batch_size} '
+        f'embedding_batch={pipeline.embedding_batch_size}')
