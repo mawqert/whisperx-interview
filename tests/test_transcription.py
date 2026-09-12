@@ -105,20 +105,17 @@ class PipelineTests(unittest.TestCase):
                                           'whisperx.diarize': self.diarize})
         modules.start()
         self.addCleanup(modules.stop)
-        download = patch.object(worker, 'snapshot_download', return_value='/cache/snapshot')
-        self.download = download.start()
-        self.addCleanup(download.stop)
+        runtime = patch.object(worker, 'load_runtime', return_value=(self.torch, self.wx, self.diarize.DiarizationPipeline))
+        runtime.start()
+        self.addCleanup(runtime.stop)
 
     def test_pipeline_reuses_audio_and_preserves_settings(self):
-        result = worker.transcribe_audio('audio.wav', token='secret', min_speakers=2, max_speakers=3,
-                                         model_name='codeswitch')
-        self.download.assert_called_once_with(repo_id=worker.MODEL_REPO,
-                                              allow_patterns='ct2_int8_float16/*')
+        result = worker.transcribe_audio('audio.wav', token='secret', min_speakers=2, max_speakers=3)
         self.wx.load_model.assert_called_once_with(
-            '/cache/snapshot/ct2_int8_float16', device='cuda', compute_type='int8',
+            'large-v3', device='cuda', compute_type='int8_float16',
             language='ru', task='transcribe', use_auth_token='secret')
         self.wx.load_audio.assert_called_once_with('audio.wav')
-        self.model.transcribe.assert_called_once_with(self.audio, batch_size=8)
+        self.model.transcribe.assert_called_once_with(self.audio, batch_size=2)
         self.wx.align.assert_called_once_with(self.raw['segments'], 'aligner',
                                              {'language': 'ru'}, self.audio, 'cuda',
                                              return_char_alignments=False)
@@ -137,8 +134,7 @@ class PipelineTests(unittest.TestCase):
         self.diarize.DiarizationPipeline.assert_not_called()
 
     def test_full_model_uses_converted_alias_and_small_batch(self):
-        result = worker.transcribe_audio('audio.wav', token='secret', model_name='large-v3')
-        self.download.assert_not_called()
+        result = worker.transcribe_audio('audio.wav', token='secret')
         self.wx.load_model.assert_called_once_with(
             'large-v3', device='cuda', compute_type='int8_float16', language='ru',
             task='transcribe', use_auth_token='secret')
@@ -147,12 +143,10 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result['asr_segments'], self.raw['segments'])
         self.assertIsNot(result['asr_segments'], self.raw['segments'])
 
-    def test_default_is_standard_turbo(self):
+    def test_diarization_batches_are_limited(self):
         worker.transcribe_audio('audio.wav', token='secret')
-        self.download.assert_not_called()
-        self.assertEqual(self.wx.load_model.call_args.args, ('large-v3-turbo',))
-        self.assertEqual(self.wx.load_model.call_args.kwargs['compute_type'], 'int8')
-        self.model.transcribe.assert_called_once_with(self.audio, batch_size=8)
+        self.assertEqual(self.diarizer.model.segmentation_batch_size, 8)
+        self.assertEqual(self.diarizer.model.embedding_batch_size, 8)
 
     def test_stage_failure_releases_memory_and_stops_pipeline(self):
         self.wx.align.side_effect = RuntimeError('alignment failed')
@@ -163,10 +157,11 @@ class PipelineTests(unittest.TestCase):
 
 
 class EndpointTests(unittest.TestCase):
-    def test_unknown_model_rejected(self):
-        response = app.app.test_client().post('/transcribe', data={
-            'file': (io.BytesIO(b'audio'), 'audio.mp3'), 'model': 'unknown'})
-        self.assertEqual(response.status_code, 400)
+    def test_model_selector_removed(self):
+        page = app.app.test_client().get('/')
+        self.assertEqual(page.status_code, 200)
+        self.assertNotIn(b'<select', page.data)
+        self.assertNotIn(b'codeswitch', page.data)
 
     def post(self):
         return app.app.test_client().post('/transcribe', data={
@@ -182,7 +177,7 @@ class EndpointTests(unittest.TestCase):
             self.assertNotIn('secret', command)
             job = json.loads(Path(command[2]).read_text())
             self.assertEqual(job['min_speakers'], 2)
-            self.assertEqual(job['model_name'], 'large-v3-turbo')
+            self.assertNotIn('model_name', job)
             self.assertNotIn('token', job)
             if len(calls) == 1:
                 kwargs['stdout'].write('huggingface.co ConnectionError')

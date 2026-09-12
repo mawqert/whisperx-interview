@@ -13,7 +13,6 @@
   label { display: block; margin: 24px 0 8px; }
   input { width: 100%; padding: 10px; border: 1px solid #cbd1d9; border-radius: 6px; background: white; }
   .counts { display: flex; gap: 16px; } .counts > div { flex: 1; }
-  select { width: 100%; padding: 10px; font: inherit; border: 1px solid #cbd1d9; border-radius: 6px; background: white; }
   button { margin-top: 24px; padding: 12px 20px; border: 0; border-radius: 6px; background: #2855da; color: white; font: inherit; cursor: pointer; }
   button:disabled { opacity: .5; cursor: wait; }
   small, #status, .meta { color: #626d7d; }
@@ -30,12 +29,6 @@
     <form id="form">
       <label for="file">Audio or video</label>
       <input id="file" name="file" type="file" accept="audio/*,video/*" required>
-      <label for="model">Transcription model</label>
-      <select id="model" name="model">
-        {% for name, profile in model_profiles.items() %}
-        <option value="{{ name }}" {% if name == default_model %}selected{% endif %}>{{ profile.label }}</option>
-        {% endfor %}
-      </select>
       <div class="counts">
         <div><label for="min">Minimum speakers</label><input id="min" name="min_speakers" type="number" min="1" step="1" placeholder="Auto"></div>
         <div><label for="max">Maximum speakers</label><input id="max" name="max_speakers" type="number" min="1" step="1" placeholder="Auto"></div>
@@ -91,7 +84,7 @@
     clipboardText = '';
     const formData = new FormData(form);
     const filename = formData.get('file').name;
-    transcriptFilename = `${filename.replace(/\.[^.]+$/, '') || filename}-${formData.get('model')}-transcript.txt`;
+    transcriptFilename = `${filename.replace(/\.[^.]+$/, '') || filename}-large-v3-transcript.txt`;
     transcript.textContent = 'Waiting for transcription…';
     status.textContent = 'Uploading and transcribing… The first run may download models. Keep this page open.';
     try {

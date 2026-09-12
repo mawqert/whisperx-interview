@@ -9,7 +9,6 @@ import threading
 
 from flask import Flask, jsonify, render_template, request
 from dotenv import load_dotenv
-from model_config import DEFAULT_MODEL, MODEL_PROFILES
 from run_logging import log as log_event
 
 load_dotenv(Path(__file__).with_name(".env"))
@@ -83,7 +82,7 @@ def speaker_blocks(segments):
 
 @app.get('/')
 def index():
-    return render_template('index.html', model_profiles=MODEL_PROFILES, default_model=DEFAULT_MODEL)
+    return render_template('index.html')
 
 
 @app.errorhandler(413)
@@ -96,9 +95,6 @@ def transcribe():
     upload = request.files.get('file')
     if not upload or not upload.filename:
         return jsonify(error='Choose an audio or video file.'), 400
-    model_name = request.form.get('model', DEFAULT_MODEL)
-    if model_name not in MODEL_PROFILES:
-        return jsonify(error='Choose a supported transcription model.'), 400
     speakers = {}
     for name in ('min_speakers', 'max_speakers'):
         value = request.form.get(name, '').strip()
@@ -132,7 +128,7 @@ def transcribe():
             job = work / 'job.json'
             output = work / 'result.json'
             job.write_text(json.dumps({'audio_path': str(source),
-                                       'output_path': str(output), 'model_name': model_name,
+                                       'output_path': str(output),
                                        **speakers}), encoding='utf-8')
             command = [sys.executable, str(Path(__file__).with_name('transcribe_worker.py')),
                        str(job)]
