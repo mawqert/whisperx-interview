@@ -1,0 +1,9 @@
+*
+!requirements.txt
+!app.py
+!model_config.py
+!run_logging.py
+!runtime_setup.py
+!transcribe_worker.py
+!templates/
+!templates/**

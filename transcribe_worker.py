@@ -9,11 +9,10 @@ import sys
 import threading
 import time
 
-from model_config import MODEL_NAME, COMPUTE_TYPE, BATCH_SIZE
+from model_config import runtime_settings
 from runtime_setup import load_runtime, prepare_diarizer
 from run_logging import log, log_load, stage
 
-DEVICE = 'cuda'
 LANGUAGE = 'ru'
 
 
@@ -38,13 +37,15 @@ def diarization_progress():
 
 
 def transcribe_audio(audio_path, *, token, min_speakers=None, max_speakers=None):
-    log(f'CONFIG model={MODEL_NAME} compute={COMPUTE_TYPE} '
-        f'batch={BATCH_SIZE} language={LANGUAGE}')
+    device, compute_type, model_name, batch_size = runtime_settings()
+    log(f'CONFIG device={device} model={model_name} compute={compute_type} '
+        f'batch={batch_size} language={LANGUAGE}')
     torch, whisperx, DiarizationPipeline = load_runtime()
 
     def release_memory():
         gc.collect()
-        torch.cuda.empty_cache()
+        if device == 'cuda':
+            torch.cuda.empty_cache()
 
     with stage('decode audio'):
         audio = whisperx.load_audio(str(audio_path))
@@ -52,23 +53,23 @@ def transcribe_audio(audio_path, *, token, min_speakers=None, max_speakers=None)
     try:
         with stage('load transcription model'):
             model = whisperx.load_model(
-                MODEL_NAME,
-                device=DEVICE,
-                compute_type=COMPUTE_TYPE,
+                model_name,
+                device=device,
+                compute_type=compute_type,
                 language=LANGUAGE,
                 task='transcribe',
                 use_auth_token=token,
             )
         with stage('transcribe'):
-            result = model.transcribe(audio, batch_size=BATCH_SIZE)
+            result = model.transcribe(audio, batch_size=batch_size)
     finally:
         del model
         release_memory()
 
     # Preserve decoding output before alignment and speaker assignment mutate it.
     extras = {'asr_segments': deepcopy(result['segments']),
-              'run_info': {'model': MODEL_NAME, 'compute_type': COMPUTE_TYPE,
-                           'batch_size': BATCH_SIZE, 'language': LANGUAGE}}
+              'run_info': {'model': model_name, 'compute_type': compute_type, 'device': device,
+                           'batch_size': batch_size, 'language': LANGUAGE}}
     # Silence needs neither alignment nor speaker detection.
     if not result['segments']:
         return {**result, 'language': LANGUAGE, 'word_segments': [], **extras}
@@ -77,11 +78,11 @@ def transcribe_audio(audio_path, *, token, min_speakers=None, max_speakers=None)
     try:
         with stage('load alignment model'):
             align_model, metadata = whisperx.load_align_model(
-                language_code=LANGUAGE, device=DEVICE,
+                language_code=LANGUAGE, device=device,
             )
         with stage('align words'):
             result = whisperx.align(
-                result['segments'], align_model, metadata, audio, DEVICE,
+                result['segments'], align_model, metadata, audio, device,
                 return_char_alignments=False,
             )
     finally:
@@ -91,7 +92,7 @@ def transcribe_audio(audio_path, *, token, min_speakers=None, max_speakers=None)
     diarizer = None
     try:
         with stage('load diarization model'):
-            diarizer = DiarizationPipeline(token=token, device=DEVICE)
+            diarizer = DiarizationPipeline(token=token, device=device)
             prepare_diarizer(diarizer)
         with stage('diarize'):
             progress = diarization_progress()

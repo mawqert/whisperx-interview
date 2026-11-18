@@ -12,6 +12,38 @@ from unittest.mock import ANY, Mock, patch
 import app
 import transcribe_worker as worker
 import run_logging
+from model_config import runtime_settings
+
+
+class RuntimeSettingsTests(unittest.TestCase):
+    @patch.dict(os.environ, {}, clear=True)
+    def test_local_defaults_preserve_gpu_settings(self):
+        self.assertEqual(runtime_settings(), ('cuda', 'int8_float16', 'large-v3', 4))
+
+    @patch.dict(os.environ, {'WHISPERX_DEVICE': 'cpu'}, clear=True)
+    def test_cpu_defaults_to_int8(self):
+        self.assertEqual(runtime_settings(), ('cpu', 'int8', 'large-v3', 4))
+
+    @patch.dict(os.environ, {'WHISPERX_DEVICE': 'cpu', 'WHISPERX_COMPUTE_TYPE': 'float32'}, clear=True)
+    def test_compute_override(self):
+        self.assertEqual(runtime_settings(), ('cpu', 'float32', 'large-v3', 4))
+
+    @patch.dict(os.environ, {'WHISPERX_DEVICE': 'invalid'}, clear=True)
+    def test_invalid_device_fails_clearly(self):
+        with self.assertRaisesRegex(ValueError, 'WHISPERX_DEVICE'):
+            runtime_settings()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_server_defaults_to_loopback(self):
+        with patch.object(app.app, 'run') as run:
+            app.main()
+        run.assert_called_once_with(host='127.0.0.1', port=8000, threaded=True)
+
+    @patch.dict(os.environ, {'HOST': '0.0.0.0'}, clear=True)
+    def test_server_accepts_container_bind_address(self):
+        with patch.object(app.app, 'run') as run:
+            app.main()
+        run.assert_called_once_with(host='0.0.0.0', port=8000, threaded=True)
 
 
 class LoggingTests(unittest.TestCase):
@@ -113,6 +145,7 @@ class SpeakerBlockTests(unittest.TestCase):
         self.assertEqual(len(app.speaker_blocks(segments)), 2)
 
 
+@patch.dict(os.environ, {'WHISPERX_DEVICE': 'cuda', 'WHISPERX_COMPUTE_TYPE': 'int8_float16'})
 class PipelineTests(unittest.TestCase):
     def setUp(self):
         self.wx = types.ModuleType('whisperx')
@@ -155,6 +188,20 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result['language'], 'ru')
         self.assertEqual(self.torch.cuda.empty_cache.call_count, 3)
 
+    @patch.dict(os.environ, {'WHISPERX_DEVICE': 'cpu', 'WHISPERX_COMPUTE_TYPE': 'int8',
+                             'WHISPERX_CPU_MODEL': 'small', 'WHISPERX_CPU_BATCH_SIZE': '1'})
+    def test_cpu_pipeline_uses_cpu_for_every_stage_without_cuda_cleanup(self):
+        result = worker.transcribe_audio('audio.wav', token='secret')
+        self.assertEqual(self.wx.load_model.call_args.kwargs['device'], 'cpu')
+        self.assertEqual(self.wx.load_model.call_args.args[0], 'small')
+        self.model.transcribe.assert_called_once_with(self.audio, batch_size=1)
+        self.assertEqual(self.wx.load_model.call_args.kwargs['compute_type'], 'int8')
+        self.wx.load_align_model.assert_called_once_with(language_code='ru', device='cpu')
+        self.assertEqual(self.wx.align.call_args.args[4], 'cpu')
+        self.diarize.DiarizationPipeline.assert_called_once_with(token='secret', device='cpu')
+        self.torch.cuda.empty_cache.assert_not_called()
+        self.assertEqual(result['run_info']['device'], 'cpu')
+
     def test_silence_skips_alignment_and_diarization(self):
         self.model.transcribe.return_value = {'segments': []}
         result = worker.transcribe_audio('silence.wav', token='secret')
@@ -189,8 +236,9 @@ class PipelineTests(unittest.TestCase):
         self.diarize.DiarizationPipeline.assert_not_called()
 
 
+@patch.object(app.shutil, 'which', return_value='ffmpeg')
 class EndpointTests(unittest.TestCase):
-    def test_model_selector_removed(self):
+    def test_model_selector_removed(self, _which):
         page = app.app.test_client().get('/')
         self.assertEqual(page.status_code, 200)
         self.assertNotIn(b'<select', page.data)
@@ -201,7 +249,7 @@ class EndpointTests(unittest.TestCase):
             'file': (io.BytesIO(b'audio'), 'audio.mp3'), 'min_speakers': '2'})
 
     @patch.dict(os.environ, {'HF_TOKEN': 'secret'})
-    def test_json_job_and_offline_retry(self):
+    def test_json_job_and_offline_retry(self, _which):
         calls = []
 
         def run(command, **kwargs):
@@ -227,7 +275,7 @@ class EndpointTests(unittest.TestCase):
         self.assertFalse(app.transcribing.locked())
 
     @patch.dict(os.environ, {'HF_TOKEN': 'secret'})
-    def test_timeout_releases_lock(self):
+    def test_timeout_releases_lock(self, _which):
         with patch.object(app, 'run_worker', side_effect=subprocess.TimeoutExpired('worker', 1)):
             response = self.post()
         self.assertEqual(response.status_code, 504)

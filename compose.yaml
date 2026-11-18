@@ -1,0 +1,43 @@
+name: whisperx-interview
+
+x-common: &common
+  ports:
+    - "127.0.0.1:8000:8000"
+  environment: &environment
+    HF_TOKEN: ${HF_TOKEN:-}
+    HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    HOST: 0.0.0.0
+  volumes:
+    - model-cache:/models
+  init: true
+
+services:
+  cpu:
+    <<: *common
+    image: ghcr.io/mawqert/whisperx:cpu
+    profiles: [cpu]
+    build:
+      context: .
+      target: cpu
+    environment:
+      <<: *environment
+      WHISPERX_DEVICE: cpu
+      WHISPERX_CPU_MODEL: ${WHISPERX_CPU_MODEL:-large-v3}
+      WHISPERX_CPU_BATCH_SIZE: "${WHISPERX_CPU_BATCH_SIZE:-4}"
+      WHISPERX_COMPUTE_TYPE: int8
+
+  gpu:
+    <<: *common
+    image: ghcr.io/mawqert/whisperx:gpu
+    profiles: [gpu]
+    build:
+      context: .
+      target: gpu
+    environment:
+      <<: *environment
+      WHISPERX_DEVICE: cuda
+      WHISPERX_COMPUTE_TYPE: int8_float16
+    gpus: all
+
+volumes:
+  model-cache:
