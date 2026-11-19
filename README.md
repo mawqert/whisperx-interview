@@ -27,6 +27,8 @@ For an NVIDIA GPU, enable GPU access in Docker and use a driver compatible with 
 docker compose up --build gpu
 ```
 
+The GPU service defaults to `large-v3`. To select `small`, set `WHISPERX_GPU_MODEL=small` in `.env` and run `docker compose up -d gpu`.
+
 Open http://127.0.0.1:8000 for either service. Before switching, stop the running service with `docker compose stop cpu` or `docker compose stop gpu`. Both services use the same named volume for downloaded models.
 
 ### Published images
